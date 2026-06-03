@@ -184,6 +184,7 @@ def make_preview(d_str, p_str):
 
 # Held at module level to prevent garbage collection between Fusion events.
 _handlers = []
+_panel = None
 
 
 class CreatedHandler(adsk.core.CommandCreatedEventHandler):
@@ -268,28 +269,58 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
 
 # ── Add-in entry points ───────────────────────────────────────────────────────
 
+def _get_panel(ui):
+    """Return the add-in's toolbar panel, or None if it doesn't exist yet."""
+    try:
+        return (ui.workspaces
+                  .itemById('FusionSolidEnvironment')
+                  .toolbarTabs
+                  .itemById('ToolsTab')
+                  .toolbarPanels
+                  .itemById('customMetricThreadPanel'))
+    except Exception:
+        return None
+
+
 def run(context):
+    global _panel
     ui = None
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
 
-        cmd_defs = ui.commandDefinitions
-        existing = cmd_defs.itemById('customMetricThreadCmd')
+        # Clean up any state left over from a previous run without a clean stop
+        panel = _get_panel(ui)
+        if panel:
+            panel.deleteMe()
+        existing = ui.commandDefinitions.itemById('customMetricThreadCmd')
         if existing:
             existing.deleteMe()
 
-        cmd_def = cmd_defs.addButtonDefinition(
+        # Register the command definition
+        cmd_def = ui.commandDefinitions.addButtonDefinition(
             'customMetricThreadCmd',
             'Add Custom Metric Thread',
-            'Add a custom ISO metric thread to the Fusion 360 thread library'
+            'Add a custom ISO metric thread to the Fusion 360 thread library.\n\n'
+            'Tip: right-click this button to assign a keyboard shortcut.',
+            ''  # empty string = Fusion default icon
         )
-
         h_created = CreatedHandler()
         cmd_def.commandCreated.add(h_created)
         _handlers.append(h_created)
 
-        cmd_def.execute()
+        # Add a persistent button to the Tools tab in the Design workspace,
+        # matching the same location ThreadKeeper and similar add-ins use.
+        tools_tab = (ui.workspaces
+                       .itemById('FusionSolidEnvironment')
+                       .toolbarTabs
+                       .itemById('ToolsTab'))
+        _panel = tools_tab.toolbarPanels.add(
+            'customMetricThreadPanel', 'Custom Threads'
+        )
+        control = _panel.controls.addCommand(cmd_def)
+        control.isPromoted = True          # show button text in the toolbar
+        control.isPromotedByDefault = True # visible by default, not hidden in the panel
 
     except Exception as e:
         if ui:
@@ -297,9 +328,16 @@ def run(context):
 
 
 def stop(context):
+    global _panel
     try:
         app = adsk.core.Application.get()
         ui = app.userInterface
+
+        panel = _get_panel(ui)
+        if panel:
+            panel.deleteMe()
+        _panel = None
+
         cmd_def = ui.commandDefinitions.itemById('customMetricThreadCmd')
         if cmd_def:
             cmd_def.deleteMe()

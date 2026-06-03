@@ -7,7 +7,7 @@
 		"": "Add custom ISO metric threads to the Fusion 360 thread library with standard 6H/6g tolerances."
 	},
 	"version": "1.0.0",
-	"runOnStartup": false,
+	"runOnStartup": true,
 	"supportedOS": "windows",
 	"editEnabled": true
 }

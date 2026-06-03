@@ -37,20 +37,30 @@ C:\Users\[YourUsername]\AppData\Roaming\Autodesk\Fusion 360 API\AddIns\
 
 ## Step 4: Verify Installation
 
-1. After clicking Run, the add-in dialog will open immediately
-2. A dialog should appear with fields for Diameter and Pitch — this confirms it is working
+1. The **Custom Threads** panel should appear in the **Tools** tab of the Design workspace ribbon
+2. Click **Add Custom Metric Thread** to open the dialog — this confirms it is working
 
 ## Using the Plugin
 
-1. Press **`Shift + S`** → Add-Ins tab → select **Custom Metric Threads** → click **Run**
-   *(If "Run on Startup" is enabled, the command will also appear in the Tools tab ribbon under Add-Ins)*
-2. Fill in the dialog:
+1. In the Design workspace, click the **Tools** tab in the ribbon
+2. Click **Add Custom Metric Thread** in the **Custom Threads** panel
+3. Fill in the dialog:
    - **Nominal Diameter (mm):** e.g., `10` for M10
    - **Pitch (mm):** e.g., `1.5`
    - The **Thread Info** box updates live with the designation, pitch diameter, minor diameter, and tap drill size
-3. Click **OK** — you'll see a confirmation message with the file path
-4. **Restart Fusion 360** to make the new thread appear in the Thread tool dropdown
-5. In the Thread feature, select **"Custom Metric"** from the thread-type list to find your thread
+4. Click **OK** — you'll see a confirmation message with the file path
+5. **Restart Fusion 360** to make the new thread appear in the Thread tool dropdown
+6. In the Thread feature, select **"Custom Metric"** from the thread-type list to find your thread
+
+## Assigning a Keyboard Shortcut
+
+Fusion 360 doesn't let add-ins set shortcuts automatically, but you can assign one in seconds:
+
+1. In the **Tools** tab, find the **Add Custom Metric Thread** button
+2. **Right-click** the button → **Change Keyboard Shortcut**
+3. Press your desired key combination (e.g., `Alt + T`) → click **OK`**
+
+The shortcut works from anywhere in the Design workspace.
 
 ## Using the Backup/Restore Script
 
