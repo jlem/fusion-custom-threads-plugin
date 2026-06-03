@@ -3,6 +3,7 @@ import adsk.fusion
 import adsk.cam
 import os
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from pathlib import Path
@@ -32,6 +33,21 @@ def get_fusion_thread_dir():
         raise RuntimeError(f'Cannot parse deploy folder from: {resource_folder}')
     deploy_root = match.group(1)
     return Path(deploy_root) / 'Fusion' / 'Server' / 'Fusion' / 'Configuration' / 'ThreadData'
+
+
+# ── ThreadKeeper backup folder ───────────────────────────────────────────────
+
+def get_threadkeeper_backup_dir():
+    """
+    Return the ThreadKeeper Threads directory used as its persistent backup.
+    ThreadKeeper syncs everything in this folder back to Fusion's ThreadData
+    on every startup, so placing our file here makes it survive Fusion updates.
+    """
+    path = (Path(os.path.expandvars('%AppData%'))
+            / 'Autodesk' / 'ApplicationPlugins'
+            / 'ThreadKeeper.bundle' / 'Contents' / 'Threads')
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ── ISO metric thread geometry ────────────────────────────────────────────────
@@ -135,15 +151,17 @@ def load_existing_threads(filepath):
 
 def save_thread(d, p):
     """
-    Write thread M{d}x{p} into Custom Metric.xml in Fusion's ThreadData folder.
-    Returns (filepath_str, was_added).
+    Write thread M{d}x{p} into Custom Metric.xml in Fusion's ThreadData folder,
+    then copy the file to the ThreadKeeper backup directory so it survives
+    future Fusion updates.
+    Returns (filepath_str, was_added, backup_filepath_str_or_None).
     """
     thread_dir = get_fusion_thread_dir()
     filepath = thread_dir / THREAD_FILE_NAME
     existing = load_existing_threads(filepath)
 
     if any(abs(ed - d) < 0.001 and abs(ep - p) < 0.001 for ed, ep in existing):
-        return str(filepath), False
+        return str(filepath), False, None
 
     all_threads = [calc_metric_thread(ed, ep) for ed, ep in existing]
     all_threads.append(calc_metric_thread(d, p))
@@ -157,7 +175,16 @@ def save_thread(d, p):
     with open(str(filepath), 'w', encoding='utf-8') as f:
         f.write(clean)
 
-    return str(filepath), True
+    # Mirror to ThreadKeeper so the file is restored after any Fusion update
+    backup_path = None
+    try:
+        backup_file = get_threadkeeper_backup_dir() / THREAD_FILE_NAME
+        shutil.copy2(str(filepath), str(backup_file))
+        backup_path = str(backup_file)
+    except Exception:
+        pass  # backup failure is non-fatal; primary write already succeeded
+
+    return str(filepath), True, backup_path
 
 
 # ── Dialog preview helper ─────────────────────────────────────────────────────
@@ -249,13 +276,17 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 ui.messageBox('Diameter and pitch must be positive numbers.')
                 return
 
-            filepath, added = save_thread(d, p)
+            filepath, added, backup_path = save_thread(d, p)
             desig = f'M{d:g}x{p:g}'
 
             if added:
+                backup_line = (f'Backup:  {backup_path}'
+                               if backup_path else
+                               'Backup:  ThreadKeeper folder not found — skipped.')
                 ui.messageBox(
                     f'Thread {desig} added.\n\n'
-                    f'File: {filepath}\n\n'
+                    f'Primary: {filepath}\n'
+                    f'{backup_line}\n\n'
                     f'Restart Fusion 360 to use this thread in the Thread tool.'
                 )
             else:
