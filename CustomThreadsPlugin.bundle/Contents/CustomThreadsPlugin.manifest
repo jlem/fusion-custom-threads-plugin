@@ -1,0 +1,13 @@
+{
+	"autodeskProduct": "Fusion360",
+	"type": "addin",
+	"id": "b7e4a1c2-3d5f-4e8a-9b0c-1d2e3f4a5b6c",
+	"author": "Jon",
+	"description": {
+		"": "Add custom ISO metric threads to the Fusion 360 thread library with standard 6H/6g tolerances."
+	},
+	"version": "1.0.0",
+	"runOnStartup": false,
+	"supportedOS": "windows",
+	"editEnabled": true
+}

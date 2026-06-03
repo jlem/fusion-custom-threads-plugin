@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0"
+	ProductType="Application"
+
+	AutodeskProduct="Fusion360"
+	Name="CustomThreadsPlugin"
+	Description="Add custom ISO metric threads to the Fusion 360 thread library with standard 6H/6g tolerances"
+	AppVersion="1.0.0"
+	Author="Jon"
+	AppNameSpace="com.local.fusion360.CustomThreadsPlugin"
+
+	ProductCode="*"
+	UpgradeCode="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}" >
+
+	<CompanyDetails Name="Jon" />
+
+	<RuntimeRequirements SupportPath="./Contents" OS="win64" Platform="Fusion360" SeriesMin="" />
+
+	<Components>
+		<RuntimeRequirements SupportPath="./Contents" OS="win64" Platform="Fusion360" SeriesMin="" />
+		<ComponentEntry AppName="CustomThreadsPlugin" Version="1.0.0" ModuleName="./Contents/CustomThreadsPlugin.manifest" AppDescription="Add custom ISO metric threads to the Fusion 360 thread library" />
+	</Components>
+
+</ApplicationPackage>
