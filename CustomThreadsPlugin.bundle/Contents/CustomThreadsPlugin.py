@@ -4,9 +4,95 @@ import adsk.cam
 import os
 import re
 import shutil
+import struct
+import zlib
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from pathlib import Path
+
+# ── Toolbar icon ──────────────────────────────────────────────────────────────
+
+def _make_icon_png(size):
+    """
+    Generate a size×size PNG: blue background with a white bold 'M'.
+    Pure Python — no Pillow or other image library required.
+    """
+    BG = (26, 115, 232)   # #1A73E8 — Autodesk-ish blue
+    FG = (255, 255, 255)  # white
+
+    buf = [BG] * (size * size)
+
+    def put(x, y):
+        if 0 <= x < size and 0 <= y < size:
+            buf[y * size + x] = FG
+
+    def fill(x0, y0, x1, y1):
+        for yy in range(y0, y1 + 1):
+            for xx in range(x0, x1 + 1):
+                put(xx, yy)
+
+    def line(x0, y0, x1, y1, t):
+        """Bresenham line with square-cap thickness t."""
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err, x, y, h = dx - dy, x0, y0, t // 2
+        while True:
+            for oy in range(-h, h + 1):
+                for ox in range(-h, h + 1):
+                    put(x + ox, y + oy)
+            if x == x1 and y == y1:
+                break
+            e2 = err * 2
+            if e2 > -dy: err -= dy; x += sx
+            if e2 <  dx: err += dx; y += sy
+
+    # All coordinates are defined on a 32×32 reference grid and scaled.
+    def sc(v):
+        return max(0, int(round(v * size / 32)))
+
+    t = max(2, sc(3))  # stroke thickness
+
+    fill(sc(3),  sc(4), sc(6),  sc(27))   # left vertical bar
+    fill(sc(25), sc(4), sc(28), sc(27))   # right vertical bar
+    line(sc(7),  sc(4), sc(15), sc(15), t)  # left diagonal  (top → V-point)
+    line(sc(16), sc(15), sc(24), sc(4), t)  # right diagonal (V-point → top)
+
+    # Encode as PNG (IHDR + IDAT + IEND)
+    def chunk(tag, data):
+        body = tag + data
+        return (struct.pack('>I', len(data)) + body
+                + struct.pack('>I', zlib.crc32(body) & 0xFFFFFFFF))
+
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
+    raw = bytearray()
+    for row in range(size):
+        raw += b'\x00'                          # filter byte: None
+        for col in range(size):
+            raw += bytes(buf[row * size + col])
+
+    return (b'\x89PNG\r\n\x1a\n'
+            + chunk(b'IHDR', ihdr)
+            + chunk(b'IDAT', zlib.compress(bytes(raw)))
+            + chunk(b'IEND', b''))
+
+
+def _ensure_icons():
+    """
+    Write 16×16 and 32×32 icon PNGs into the bundle's resources folder.
+    Returns the icon directory path (passed to addButtonDefinition).
+    Icons are only generated if they don't already exist.
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    icon_dir   = os.path.join(script_dir, 'resources', 'icon')
+    os.makedirs(icon_dir, exist_ok=True)
+    for size in (16, 32):
+        path = os.path.join(icon_dir, f'{size}x{size}.png')
+        if not os.path.exists(path):
+            with open(path, 'wb') as fh:
+                fh.write(_make_icon_png(size))
+    return icon_dir
+
 
 # ── Locate Fusion's active ThreadData folder ──────────────────────────────────
 
@@ -328,13 +414,14 @@ def run(context):
         if existing:
             existing.deleteMe()
 
-        # Register the command definition
+        # Generate icons on first run, then register the command definition
+        icon_dir = _ensure_icons()
         cmd_def = ui.commandDefinitions.addButtonDefinition(
             'customMetricThreadCmd',
             'Add Custom Metric Thread',
             'Add a custom ISO metric thread to the Fusion 360 thread library.\n\n'
             'Tip: right-click this button to assign a keyboard shortcut.',
-            ''  # empty string = Fusion default icon
+            icon_dir
         )
         h_created = CreatedHandler()
         cmd_def.commandCreated.add(h_created)
