@@ -12,9 +12,12 @@ from pathlib import Path
 
 # ── Toolbar icon ──────────────────────────────────────────────────────────────
 
-def _make_icon_png(size):
+def _make_icon_png(size, variant='add'):
     """
-    Generate a size×size PNG: blue background with a white bold 'M'.
+    Generate a size×size PNG toolbar icon.
+    Both variants share a blue background with a white bold 'M'.
+      variant='add'    – adds a '+' in the lower-right area
+      variant='manage' – adds a pencil stroke in the lower-right area
     Pure Python — no Pillow or other image library required.
     """
     BG = (26, 115, 232)   # #1A73E8 — Autodesk-ish blue
@@ -51,14 +54,27 @@ def _make_icon_png(size):
     def sc(v):
         return max(0, int(round(v * size / 32)))
 
-    t = max(2, sc(3))  # stroke thickness
+    t = max(2, sc(3))   # M stroke thickness
 
-    fill(sc(3),  sc(4), sc(6),  sc(27))   # left vertical bar
-    fill(sc(25), sc(4), sc(28), sc(27))   # right vertical bar
-    line(sc(7),  sc(4), sc(15), sc(15), t)  # left diagonal  (top → V-point)
-    line(sc(16), sc(15), sc(24), sc(4), t)  # right diagonal (V-point → top)
+    # ── M (identical in both variants) ──────────────────────────────────────
+    fill(sc(3),  sc(4), sc(6),  sc(27))              # left vertical bar
+    fill(sc(25), sc(4), sc(28), sc(27))              # right vertical bar
+    line(sc(7),  sc(4), sc(15), sc(15), t)           # left diagonal
+    line(sc(16), sc(15), sc(24), sc(4), t)           # right diagonal
 
-    # Encode as PNG (IHDR + IDAT + IEND)
+    # ── Variant symbol (lower-right area, between the M's verticals) ────────
+    if variant == 'add':
+        # Plus sign: horizontal and vertical bars forming '+'
+        fill(sc(16), sc(23), sc(29), sc(26))         # horizontal bar
+        fill(sc(21), sc(17), sc(25), sc(29))         # vertical bar
+
+    elif variant == 'manage':
+        # Pencil: diagonal body, eraser block, pointed tip
+        line(sc(28), sc(17), sc(19), sc(26), max(1, sc(2)))   # body
+        fill(sc(17), sc(26), sc(20), sc(29))         # tip (writing point)
+        fill(sc(27), sc(15), sc(30), sc(19))         # eraser end
+
+    # ── PNG encode (IHDR + IDAT + IEND) ─────────────────────────────────────
     def chunk(tag, data):
         body = tag + data
         return (struct.pack('>I', len(data)) + body
@@ -67,7 +83,7 @@ def _make_icon_png(size):
     ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
     raw = bytearray()
     for row in range(size):
-        raw += b'\x00'                          # filter byte: None
+        raw += b'\x00'
         for col in range(size):
             raw += bytes(buf[row * size + col])
 
@@ -79,19 +95,22 @@ def _make_icon_png(size):
 
 def _ensure_icons():
     """
-    Write 16×16 and 32×32 icon PNGs into the bundle's resources folder.
-    Returns the icon directory path (passed to addButtonDefinition).
-    Icons are only generated if they don't already exist.
+    Write 16×16 and 32×32 PNGs for each icon variant into the bundle's
+    resources folder.  Returns {'add': path, 'manage': path}.
+    Each variant is regenerated if its directory is missing.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    icon_dir   = os.path.join(script_dir, 'resources', 'icon')
-    os.makedirs(icon_dir, exist_ok=True)
-    for size in (16, 32):
-        path = os.path.join(icon_dir, f'{size}x{size}.png')
-        if not os.path.exists(path):
-            with open(path, 'wb') as fh:
-                fh.write(_make_icon_png(size))
-    return icon_dir
+    paths = {}
+    for variant in ('add', 'manage'):
+        icon_dir = os.path.join(script_dir, 'resources', variant)
+        os.makedirs(icon_dir, exist_ok=True)
+        for size in (16, 32):
+            path = os.path.join(icon_dir, f'{size}x{size}.png')
+            if not os.path.exists(path):
+                with open(path, 'wb') as fh:
+                    fh.write(_make_icon_png(size, variant))
+        paths[variant] = icon_dir
+    return paths
 
 
 # ── Locate Fusion's active ThreadData folder ──────────────────────────────────
@@ -204,6 +223,8 @@ def build_thread_xml(threads):
         desig = ET.SubElement(ts, 'Designation')
         ET.SubElement(desig, 'ThreadDesignation').text = t['designation']
         ET.SubElement(desig, 'CTD').text = t['designation']
+        if t.get('label'):
+            ET.SubElement(desig, 'Label').text = t['label']
         ET.SubElement(desig, 'Pitch').text = str(t['pitch'])
 
         for cls in ('6g', '6H', '4g6g'):
@@ -221,7 +242,7 @@ def build_thread_xml(threads):
 
 
 def load_existing_threads(filepath):
-    """Return list of (diameter, pitch) tuples already in the thread XML file."""
+    """Return list of (diameter, pitch, label) tuples from the thread XML file."""
     if not filepath.exists():
         return []
     root = ET.parse(str(filepath)).getroot()
@@ -231,29 +252,52 @@ def load_existing_threads(filepath):
         for desig in ts.findall('Designation'):
             pitch_el = desig.find('Pitch')
             if pitch_el is not None:
-                threads.append((size, float(pitch_el.text)))
+                label_el = desig.find('Label')
+                label = (label_el.text or '').strip() if label_el is not None else ''
+                threads.append((size, float(pitch_el.text), label))
     return threads
 
 
-def save_thread(d, p):
+def apply_changes(deletes, new_d=None, new_p=None, new_label=''):
     """
-    Write thread M{d}x{p} into Custom Metric.xml in Fusion's ThreadData folder,
-    then copy the file to the ThreadKeeper backup directory so it survives
-    future Fusion updates.
-    Returns (filepath_str, was_added, backup_filepath_str_or_None).
+    Apply a batch of changes to Custom Metric.xml in one write:
+      - deletes   : set of (d, p) tuples to remove (matched by diameter+pitch)
+      - new_d/p   : optional new thread to add
+      - new_label : optional human-readable label stored in <Label> (ignored by Fusion)
+
+    Returns (filepath_str, added_bool, backup_path_or_None).
+    Nothing is written if there are no effective changes.
     """
     thread_dir = get_fusion_thread_dir()
-    filepath = thread_dir / THREAD_FILE_NAME
-    existing = load_existing_threads(filepath)
+    filepath   = thread_dir / THREAD_FILE_NAME
+    existing   = load_existing_threads(filepath)   # [(d, p, label), ...]
 
-    if any(abs(ed - d) < 0.001 and abs(ep - p) < 0.001 for ed, ep in existing):
+    def matches(a, b):
+        return abs(a[0] - b[0]) < 0.001 and abs(a[1] - b[1]) < 0.001
+
+    remaining = [t for t in existing
+                 if not any(matches(t, d) for d in deletes)]
+
+    added = False
+    if new_d is not None and new_p is not None and new_d > 0 and new_p > 0:
+        if not any(matches((new_d, new_p), t) for t in remaining):
+            remaining.append((new_d, new_p, new_label or ''))
+            added = True
+
+    if not deletes and not added:
         return str(filepath), False, None
 
-    all_threads = [calc_metric_thread(ed, ep) for ed, ep in existing]
-    all_threads.append(calc_metric_thread(d, p))
+    # Sort by diameter then pitch for a tidy file
+    remaining.sort(key=lambda t: (t[0], t[1]))
 
-    xml_root = build_thread_xml(all_threads)
-    xml_str = minidom.parseString(
+    thread_data = []
+    for d, p, lbl in remaining:
+        t = calc_metric_thread(d, p)
+        t['label'] = lbl
+        thread_data.append(t)
+
+    xml_root = build_thread_xml(thread_data)
+    xml_str  = minidom.parseString(
         ET.tostring(xml_root, encoding='unicode')
     ).toprettyxml(indent='  ')
     clean = '\n'.join(line for line in xml_str.splitlines() if line.strip())
@@ -261,19 +305,18 @@ def save_thread(d, p):
     with open(str(filepath), 'w', encoding='utf-8') as f:
         f.write(clean)
 
-    # Mirror to ThreadKeeper so the file is restored after any Fusion update
     backup_path = None
     try:
         backup_file = get_threadkeeper_backup_dir() / THREAD_FILE_NAME
         shutil.copy2(str(filepath), str(backup_file))
         backup_path = str(backup_file)
     except Exception:
-        pass  # backup failure is non-fatal; primary write already succeeded
+        pass
 
-    return str(filepath), True, backup_path
+    return str(filepath), added, backup_path
 
 
-# ── Dialog preview helper ─────────────────────────────────────────────────────
+# ── Shared dialog helpers ─────────────────────────────────────────────────────
 
 def make_preview(d_str, p_str):
     try:
@@ -286,108 +329,268 @@ def make_preview(d_str, p_str):
                 f"Pitch dia   : {t['6H']['pitch']} mm\n"
                 f"Minor dia   : {t['6H']['minor']} mm  (6H internal)\n"
                 f"Tap drill   : {t['tap_drill']} mm\n"
-                f"Classes     : 6g (external/bolt)  +  6H (internal/nut)  +  4g6g (external)"
+                f"Classes     : 6g (external/bolt)  +  6H (internal/nut)  +  4g6g"
             )
     except Exception:
         pass
-    return 'Enter numeric values to preview thread dimensions.'
+    return 'Enter a valid diameter and pitch to preview.'
 
 
-# ── Fusion 360 event handlers ─────────────────────────────────────────────────
+def _result_message(filepath, backup_path, parts):
+    backup_line = (f'Backup:  {backup_path}' if backup_path
+                   else 'Backup:  ThreadKeeper folder not found — skipped.')
+    return ('\n'.join(parts)
+            + f'\n\nPrimary: {filepath}\n{backup_line}'
+            + '\n\nRestart Fusion 360 to apply changes in the Thread tool.')
 
-# Held at module level to prevent garbage collection between Fusion events.
-_handlers = []
-_panel = None
 
+# ── "Add Thread" dialog ───────────────────────────────────────────────────────
 
-class CreatedHandler(adsk.core.CommandCreatedEventHandler):
-    def __init__(self):
-        super().__init__()
+class AddCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self): super().__init__()
 
     def notify(self, args):
         try:
-            cmd = adsk.core.Command.cast(args.command)
+            cmd    = adsk.core.Command.cast(args.command)
             inputs = cmd.commandInputs
-
-            inputs.addStringValueInput('diameter', 'Nominal Diameter (mm)', '10')
-            inputs.addStringValueInput('pitch', 'Pitch (mm)', '1.5')
-            inputs.addTextBoxCommandInput(
-                'preview', 'Thread Info',
-                make_preview('10', '1.5'),
-                5, True
-            )
-
-            h_changed = ChangedHandler()
-            cmd.inputChanged.add(h_changed)
-            _handlers.append(h_changed)
-
-            h_exec = ExecuteHandler()
-            cmd.execute.add(h_exec)
-            _handlers.append(h_exec)
-
+            inputs.addStringValueInput('add_d',     'Nominal Diameter (mm)', '10')
+            inputs.addStringValueInput('add_p',     'Pitch (mm)',            '1.5')
+            inputs.addStringValueInput('add_label', 'Label (optional)',      '')
+            inputs.addTextBoxCommandInput('add_preview', 'Thread Info',
+                                          make_preview('10', '1.5'), 5, True)
+            h = AddChangedHandler();  cmd.inputChanged.add(h); _handlers.append(h)
+            h = AddExecuteHandler();  cmd.execute.add(h);      _handlers.append(h)
         except Exception as e:
             adsk.core.Application.get().userInterface.messageBox(f'Dialog error: {e}')
 
 
-class ChangedHandler(adsk.core.InputChangedEventHandler):
-    def __init__(self):
-        super().__init__()
+class AddChangedHandler(adsk.core.InputChangedEventHandler):
+    def __init__(self): super().__init__()
 
     def notify(self, args):
         try:
-            inputs = args.inputs
-            d_str = inputs.itemById('diameter').value
-            p_str = inputs.itemById('pitch').value
-            preview = inputs.itemById('preview')
-            if preview:
-                preview.text = make_preview(d_str, p_str)
+            if args.input.id in ('add_d', 'add_p'):
+                inputs  = args.inputs
+                d_str   = inputs.itemById('add_d').value
+                p_str   = inputs.itemById('add_p').value
+                inputs.itemById('add_preview').text = make_preview(d_str, p_str)
         except Exception:
             pass
 
 
-class ExecuteHandler(adsk.core.CommandEventHandler):
-    def __init__(self):
-        super().__init__()
+class AddExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self): super().__init__()
 
     def notify(self, args):
         ui = adsk.core.Application.get().userInterface
         try:
-            cmd = adsk.core.Command.cast(args.command)
-            inputs = cmd.commandInputs
-
-            d = float(inputs.itemById('diameter').value.strip())
-            p = float(inputs.itemById('pitch').value.strip())
-
+            inputs = adsk.core.Command.cast(args.command).commandInputs
+            d     = float(inputs.itemById('add_d').value.strip())
+            p     = float(inputs.itemById('add_p').value.strip())
+            label = inputs.itemById('add_label').value.strip()
             if d <= 0 or p <= 0:
                 ui.messageBox('Diameter and pitch must be positive numbers.')
                 return
-
-            filepath, added, backup_path = save_thread(d, p)
-            desig = f'M{d:g}x{p:g}'
-
+            filepath, added, backup = apply_changes(set(), d, p, label)
             if added:
-                backup_line = (f'Backup:  {backup_path}'
-                               if backup_path else
-                               'Backup:  ThreadKeeper folder not found — skipped.')
-                ui.messageBox(
-                    f'Thread {desig} added.\n\n'
-                    f'Primary: {filepath}\n'
-                    f'{backup_line}\n\n'
-                    f'Restart Fusion 360 to use this thread in the Thread tool.'
-                )
+                ui.messageBox(_result_message(filepath, backup,
+                                              [f'Thread M{d:g}x{p:g} added.']))
             else:
-                ui.messageBox(f'Thread {desig} is already in the custom library.')
-
+                ui.messageBox(f'M{d:g}x{p:g} is already in the custom library.')
         except ValueError:
             ui.messageBox('Please enter numeric values for diameter and pitch.')
         except Exception as e:
             ui.messageBox(f'Error saving thread: {e}')
 
 
+# ── "Manage Threads" dialog ───────────────────────────────────────────────────
+#
+# Design principle: the table is built ONCE when the dialog opens and is
+# NEVER deleted or rebuilt during the session.  Instead, cell text is updated
+# in-place (via table.commandInputs.itemById) so we never touch the input list
+# from inside an inputChanged callback — the root cause of the previous bugs.
+#
+# _manage_threads  : (d, p) list — the threads shown when the dialog opened
+# _pending_deletes : set of (d, p) to remove on OK
+# _edit_index      : index into _manage_threads of the row being edited, or -1
+
+_manage_threads  = []
+_pending_deletes = set()
+_edit_index      = -1
+
+
+def _set_row_label(inputs, i, text):
+    """Update the designation cell text for row i without rebuilding the table."""
+    try:
+        table = inputs.itemById('mgr_table')
+        if table:
+            cell = table.commandInputs.itemById(f'mgr_desig_{i}')
+            if cell:
+                cell.text = text
+    except Exception:
+        pass
+
+
+class ManageCreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self): super().__init__()
+
+    def notify(self, args):
+        global _manage_threads, _pending_deletes, _edit_index
+        _pending_deletes = set()
+        _edit_index      = -1
+        try:
+            fp = get_fusion_thread_dir() / THREAD_FILE_NAME
+            _manage_threads = load_existing_threads(fp)
+        except Exception:
+            _manage_threads = []
+
+        try:
+            cmd    = adsk.core.Command.cast(args.command)
+            inputs = cmd.commandInputs
+
+            # ── Table (built once, never rebuilt) ───────────────────────────
+            table = inputs.addTableCommandInput('mgr_table', 'Custom Threads', 5, '4:3:2:1:1')
+            table.minimumVisibleRows = 3
+            table.maximumVisibleRows = 8
+            table.isFullWidth = True
+            ti = table.commandInputs
+
+            table.addCommandInput(ti.addTextBoxCommandInput('mgr_h0', '', 'Designation',    1, True), 0, 0)
+            table.addCommandInput(ti.addTextBoxCommandInput('mgr_h1', '', 'Label',          1, True), 0, 1)
+            table.addCommandInput(ti.addTextBoxCommandInput('mgr_h2', '', 'Tap Drill (mm)', 1, True), 0, 2)
+            table.addCommandInput(ti.addTextBoxCommandInput('mgr_h3', '', 'Edit',           1, True), 0, 3)
+            table.addCommandInput(ti.addTextBoxCommandInput('mgr_h4', '', 'Remove',         1, True), 0, 4)
+
+            if not _manage_threads:
+                empty = ti.addTextBoxCommandInput('mgr_empty', '',
+                                                  'No custom threads defined yet.', 1, True)
+                table.addCommandInput(empty, 1, 0, 1, 5)
+            else:
+                for i, (d, p, lbl) in enumerate(_manage_threads):
+                    t   = calc_metric_thread(d, p)
+                    row = i + 1
+                    table.addCommandInput(
+                        ti.addTextBoxCommandInput(f'mgr_desig_{i}', '', t['designation'],    1, True), row, 0)
+                    table.addCommandInput(
+                        ti.addTextBoxCommandInput(f'mgr_label_{i}', '', lbl,                 1, True), row, 1)
+                    table.addCommandInput(
+                        ti.addTextBoxCommandInput(f'mgr_tap_{i}',   '', str(t['tap_drill']), 1, True), row, 2)
+                    table.addCommandInput(
+                        ti.addBoolValueInput(f'mgr_edit_{i}', 'Edit',   False, '', False), row, 3)
+                    table.addCommandInput(
+                        ti.addBoolValueInput(f'mgr_rem_{i}',  'Remove', False, '', False), row, 4)
+
+            # ── Edit fields (always present below the table) ─────────────────
+            inputs.addStringValueInput('mgr_d',     'Nominal Diameter (mm)', '')
+            inputs.addStringValueInput('mgr_p',     'Pitch (mm)',            '')
+            inputs.addStringValueInput('mgr_label', 'Label (optional)',      '')
+            inputs.addTextBoxCommandInput('mgr_preview', 'Thread Info',
+                                          'Click Edit on a row to modify it.', 4, True)
+
+            h = ManageChangedHandler(); cmd.inputChanged.add(h); _handlers.append(h)
+            h = ManageExecuteHandler(); cmd.execute.add(h);      _handlers.append(h)
+
+        except Exception as e:
+            adsk.core.Application.get().userInterface.messageBox(f'Dialog error: {e}')
+
+
+class ManageChangedHandler(adsk.core.InputChangedEventHandler):
+    def __init__(self): super().__init__()
+
+    def notify(self, args):
+        global _pending_deletes, _edit_index
+        try:
+            cid    = args.input.id
+            inputs = args.inputs
+
+            if cid.startswith('mgr_edit_'):
+                i        = int(cid.split('_')[-1])
+                d, p, lbl = _manage_threads[i]
+                t         = calc_metric_thread(d, p)
+
+                # Clear the previous edit marker if switching rows
+                if _edit_index >= 0 and _edit_index != i:
+                    d_prev, p_prev, _ = _manage_threads[_edit_index]
+                    orig = calc_metric_thread(d_prev, p_prev)['designation']
+                    _set_row_label(inputs, _edit_index, orig)
+
+                _edit_index = i
+                _set_row_label(inputs, i, f'→ {t["designation"]}')
+                inputs.itemById('mgr_d').value       = f'{d:g}'
+                inputs.itemById('mgr_p').value       = f'{p:g}'
+                inputs.itemById('mgr_label').value   = lbl
+                inputs.itemById('mgr_preview').text  = make_preview(f'{d:g}', f'{p:g}')
+
+            elif cid.startswith('mgr_rem_'):
+                i         = int(cid.split('_')[-1])
+                d, p, lbl = _manage_threads[i]
+                _pending_deletes.add((d, p))
+                _set_row_label(inputs, i, f'[removed] {calc_metric_thread(d, p)["designation"]}')
+                # If the removed row was being edited, clear the edit state
+                if _edit_index == i:
+                    _edit_index = -1
+                    inputs.itemById('mgr_d').value      = ''
+                    inputs.itemById('mgr_p').value      = ''
+                    inputs.itemById('mgr_label').value  = ''
+                    inputs.itemById('mgr_preview').text = 'Click Edit on a row to modify it.'
+
+            elif cid in ('mgr_d', 'mgr_p'):
+                d_str = inputs.itemById('mgr_d').value
+                p_str = inputs.itemById('mgr_p').value
+                inputs.itemById('mgr_preview').text = make_preview(d_str, p_str)
+
+        except Exception:
+            pass
+
+
+class ManageExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self): super().__init__()
+
+    def notify(self, args):
+        ui = adsk.core.Application.get().userInterface
+        try:
+            inputs   = adsk.core.Command.cast(args.command).commandInputs
+            deletes  = set(_pending_deletes)
+            new_d, new_p, new_label = None, None, ''
+
+            if _edit_index >= 0:
+                d_str = inputs.itemById('mgr_d').value.strip()
+                p_str = inputs.itemById('mgr_p').value.strip()
+                if d_str and p_str:
+                    d_orig, p_orig, _ = _manage_threads[_edit_index]
+                    deletes.add((d_orig, p_orig))          # delete the original
+                    new_d     = float(d_str)
+                    new_p     = float(p_str)
+                    new_label = inputs.itemById('mgr_label').value.strip()
+
+            filepath, added, backup = apply_changes(deletes, new_d, new_p, new_label)
+
+            parts = []
+            if added:
+                d_o, p_o, _ = _manage_threads[_edit_index]
+                parts.append(f'M{d_o:g}x{p_o:g} updated to M{new_d:g}x{new_p:g}.')
+            n_removed = len(_pending_deletes)   # excludes the edit-replacement
+            if n_removed:
+                parts.append(f'{n_removed} thread(s) removed.')
+
+            if parts:
+                ui.messageBox(_result_message(filepath, backup, parts))
+
+        except ValueError:
+            ui.messageBox('Please enter numeric values for diameter and pitch.')
+        except Exception as e:
+            ui.messageBox(f'Error applying changes: {e}')
+
+
+# ── Fusion 360 event handlers — GC anchors ────────────────────────────────────
+
+_handlers = []
+_panel    = None
+
+
 # ── Add-in entry points ───────────────────────────────────────────────────────
 
 def _get_panel(ui):
-    """Return the add-in's toolbar panel, or None if it doesn't exist yet."""
     try:
         return (ui.workspaces
                   .itemById('FusionSolidEnvironment')
@@ -399,46 +602,59 @@ def _get_panel(ui):
         return None
 
 
+def _register_cmd(ui, cmd_id, label, tooltip, icon_dir):
+    """Delete any stale definition and register a fresh one. Returns the CommandDefinition."""
+    old = ui.commandDefinitions.itemById(cmd_id)
+    if old:
+        old.deleteMe()
+    return ui.commandDefinitions.addButtonDefinition(cmd_id, label, tooltip, icon_dir)
+
+
 def run(context):
     global _panel
     ui = None
     try:
         app = adsk.core.Application.get()
-        ui = app.userInterface
+        ui  = app.userInterface
 
-        # Clean up any state left over from a previous run without a clean stop
         panel = _get_panel(ui)
         if panel:
             panel.deleteMe()
-        existing = ui.commandDefinitions.itemById('customMetricThreadCmd')
-        if existing:
-            existing.deleteMe()
 
-        # Generate icons on first run, then register the command definition
-        icon_dir = _ensure_icons()
-        cmd_def = ui.commandDefinitions.addButtonDefinition(
-            'customMetricThreadCmd',
+        icons = _ensure_icons()
+
+        # ── Add Thread command ───────────────────────────────────────────────
+        add_def = _register_cmd(ui,
+            'customMetricAddCmd',
             'Add Custom Metric Thread',
-            'Add a custom ISO metric thread to the Fusion 360 thread library.\n\n'
-            'Tip: right-click this button to assign a keyboard shortcut.',
-            icon_dir
-        )
-        h_created = CreatedHandler()
-        cmd_def.commandCreated.add(h_created)
-        _handlers.append(h_created)
+            'Define a new custom ISO metric thread.\n\n'
+            'Tip: right-click to assign a keyboard shortcut.',
+            icons['add'])
+        h = AddCreatedHandler()
+        add_def.commandCreated.add(h)
+        _handlers.append(h)
 
-        # Add a persistent button to the Tools tab in the Design workspace,
-        # matching the same location ThreadKeeper and similar add-ins use.
+        # ── Manage Threads command ───────────────────────────────────────────
+        mgr_def = _register_cmd(ui,
+            'customMetricManageCmd',
+            'Manage Custom Metric Threads',
+            'Edit or remove existing custom metric threads.',
+            icons['manage'])
+        h = ManageCreatedHandler()
+        mgr_def.commandCreated.add(h)
+        _handlers.append(h)
+
+        # ── Toolbar panel with both buttons ──────────────────────────────────
         tools_tab = (ui.workspaces
                        .itemById('FusionSolidEnvironment')
                        .toolbarTabs
                        .itemById('ToolsTab'))
-        _panel = tools_tab.toolbarPanels.add(
-            'customMetricThreadPanel', 'Custom Threads'
-        )
-        control = _panel.controls.addCommand(cmd_def)
-        control.isPromoted = True          # show button text in the toolbar
-        control.isPromotedByDefault = True # visible by default, not hidden in the panel
+        _panel = tools_tab.toolbarPanels.add('customMetricThreadPanel', 'Custom Threads')
+
+        for cmd_def in (add_def, mgr_def):
+            ctrl = _panel.controls.addCommand(cmd_def)
+            ctrl.isPromoted         = True
+            ctrl.isPromotedByDefault = True
 
     except Exception as e:
         if ui:
@@ -449,16 +665,17 @@ def stop(context):
     global _panel
     try:
         app = adsk.core.Application.get()
-        ui = app.userInterface
+        ui  = app.userInterface
 
         panel = _get_panel(ui)
         if panel:
             panel.deleteMe()
         _panel = None
 
-        cmd_def = ui.commandDefinitions.itemById('customMetricThreadCmd')
-        if cmd_def:
-            cmd_def.deleteMe()
+        for cmd_id in ('customMetricAddCmd', 'customMetricManageCmd'):
+            cmd_def = ui.commandDefinitions.itemById(cmd_id)
+            if cmd_def:
+                cmd_def.deleteMe()
         _handlers.clear()
     except Exception:
         pass
