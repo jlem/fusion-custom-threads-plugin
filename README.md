@@ -32,7 +32,7 @@ The plugin saves custom thread definitions as an XML file alongside the other th
 %LOCALAPPDATA%\Autodesk\webdeploy\production\<version>\Fusion\Server\Fusion\Configuration\ThreadData
 ```
 
-Each custom thread is a separate XML file with this format:
+A single new file contains all of the defined custom thread designations, in this format:
 ```xml
 <?xml version='1.0' encoding='utf-8'?>
 <ThreadDesignation>
@@ -44,7 +44,7 @@ Each custom thread is a separate XML file with this format:
 </ThreadDesignation>
 ```
 
-Fusion 360 reads these files on startup and adds them to your thread library.
+Fusion 360 reads this file on startup and adds it to your thread library.
 
 ## Backup & Restore
 
